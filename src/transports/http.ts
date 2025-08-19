@@ -10,6 +10,9 @@ import { httpConfig } from '../utils/config.js';
 import { logger, createContextLogger } from '../utils/logger.js';
 import { globalProgressManager } from '../utils/progress.js';
 import { globalHeartbeat, createHealthResponse, createPingResponse } from '../utils/ping.js';
+import { OAuthProvider } from '../auth/oauth.js';
+import { createOAuthRoutes } from '../auth/oauthRoutes.js';
+import { serverConfig } from '../utils/config.js';
 
 export interface SessionTransports {
   streamable: Record<string, StreamableHTTPServerTransport>;
@@ -22,9 +25,17 @@ export class HTTPTransportManager {
     streamable: {},
     sse: {}
   };
+  private oauthProvider: OAuthProvider;
 
   constructor(private mcpServer: McpServer) {
     this.app = express();
+    this.oauthProvider = new OAuthProvider({
+      clientId: 'mcp-template-client',
+      clientSecret: 'mcp-template-secret-key',
+      redirectUri: 'http://localhost:3000/auth/callback',
+      issuer: 'http://localhost:8181',
+      scopes: ['read', 'write', 'admin', 'openid', 'profile', 'email']
+    });
     this.setupMiddleware();
     this.setupRoutes();
   }
@@ -162,6 +173,9 @@ export class HTTPTransportManager {
     this.app.get('/progress', (req: Request, res: Response) => {
       this.handleProgressList(req, res);
     });
+
+    // OAuth 2.0 routes - must come before error handling middleware
+    this.app.use('/', createOAuthRoutes(this.oauthProvider));
 
     // Error handling middleware
     this.app.use((error: Error, req: Request, res: Response, _next: any) => {

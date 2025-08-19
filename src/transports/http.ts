@@ -8,6 +8,8 @@ import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { httpConfig } from '../utils/config.js';
 import { logger, createContextLogger } from '../utils/logger.js';
+import { globalProgressManager } from '../utils/progress.js';
+import { globalHeartbeat, createHealthResponse, createPingResponse } from '../utils/ping.js';
 
 export interface SessionTransports {
   streamable: Record<string, StreamableHTTPServerTransport>;
@@ -104,12 +106,30 @@ export class HTTPTransportManager {
   }
 
   private setupRoutes(): void {
-    // Health check endpoint
+    // Health check endpoint with comprehensive status
     this.app.get('/health', (req: Request, res: Response) => {
+      const healthStatus = globalHeartbeat.status;
+      const response = createHealthResponse(healthStatus);
+      const statusCode = healthStatus.isHealthy ? 200 : 503;
+      res.status(statusCode).json(response);
+    });
+
+    // Simple ping endpoint for connectivity testing
+    this.app.get('/ping', (req: Request, res: Response) => {
+      const startTime = Date.now();
+      const responseTime = Date.now() - startTime;
+      const response = createPingResponse(responseTime);
+      res.json(response);
+    });
+
+    // Heartbeat status endpoint
+    this.app.get('/heartbeat', (req: Request, res: Response) => {
+      const status = globalHeartbeat.status;
       res.json({
-        status: 'healthy',
-        timestamp: new Date().toISOString(),
-        service: 'mcp-server-template'
+        ...status,
+        isRunning: globalHeartbeat.isRunning,
+        options: globalHeartbeat.options,
+        timestamp: new Date().toISOString()
       });
     });
 
@@ -135,8 +155,12 @@ export class HTTPTransportManager {
 
     // Progress endpoint for long-running operations
     this.app.get('/progress/:progressId', (req: Request, res: Response) => {
-      // Implementation will be added with progress utilities
-      res.json({ message: 'Progress tracking not implemented yet' });
+      this.handleProgressQuery(req, res);
+    });
+
+    // Progress list endpoint
+    this.app.get('/progress', (req: Request, res: Response) => {
+      this.handleProgressList(req, res);
     });
 
     // Error handling middleware
@@ -174,34 +198,29 @@ export class HTTPTransportManager {
   }
 
   private async handleStreamableHTTP(req: Request, res: Response): Promise<void> {
-    const sessionId = req.sessionID;
     const reqLogger = createContextLogger({
-      requestId: sessionId,
+      requestId: req.sessionID,
       operation: 'streamable-http'
     });
 
     try {
-      // Get or create transport for this session
-      let transport = this.transports.streamable[sessionId];
+      // Create a new transport instance for each request (stateless mode)
+      // This ensures complete isolation and prevents request ID collisions
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined
+      });
       
-      if (!transport) {
-        transport = new StreamableHTTPServerTransport({
-          sessionIdGenerator: () => sessionId
-        });
-        
-        this.transports.streamable[sessionId] = transport;
-        
-        // Clean up on disconnect
-        res.on('close', () => {
-          reqLogger.info('Client disconnected, cleaning up transport');
-          transport?.close();
-          delete this.transports.streamable[sessionId];
-        });
+      // Clean up on request completion
+      res.on('close', () => {
+        reqLogger.debug('Request completed, cleaning up transport');
+        transport.close();
+      });
 
-        await this.mcpServer.connect(transport);
-        reqLogger.info('New streamable HTTP transport connected');
-      }
+      // Connect the transport to our server
+      await this.mcpServer.connect(transport);
+      reqLogger.debug('New streamable HTTP transport connected for request');
 
+      // Handle the request
       await transport.handleRequest(req, res, req.body);
       
     } catch (error) {
@@ -354,6 +373,74 @@ export class HTTPTransportManager {
     }
   }
 
+  private handleProgressQuery(req: Request, res: Response): void {
+    const { progressId } = req.params;
+    
+    if (!progressId) {
+      res.status(400).json({
+        error: 'Progress ID is required'
+      });
+      return;
+    }
+    
+    const reqLogger = createContextLogger({
+      requestId: req.sessionID,
+      operation: 'progress-query',
+      progressId
+    });
+
+    try {
+      const tracker = globalProgressManager.get(progressId);
+      
+      if (!tracker) {
+        reqLogger.warn('Progress tracker not found');
+        res.status(404).json({
+          error: 'Progress tracker not found',
+          progressId
+        });
+        return;
+      }
+
+      reqLogger.debug('Progress tracker retrieved');
+      res.json({
+        progress: tracker.toJSON(),
+        timestamp: new Date().toISOString()
+      });
+
+    } catch (error) {
+      reqLogger.error('Error retrieving progress', error as Error);
+      res.status(500).json({
+        error: 'Internal server error',
+        progressId
+      });
+    }
+  }
+
+  private handleProgressList(req: Request, res: Response): void {
+    const reqLogger = createContextLogger({
+      requestId: req.sessionID,
+      operation: 'progress-list'
+    });
+
+    try {
+      const trackers = globalProgressManager.getAll();
+      const progressData = trackers.map(tracker => tracker.toJSON());
+      
+      reqLogger.debug('Progress trackers retrieved', { count: trackers.length });
+      res.json({
+        progress: progressData,
+        count: trackers.length,
+        timestamp: new Date().toISOString()
+      });
+
+    } catch (error) {
+      reqLogger.error('Error retrieving progress list', error as Error);
+      res.status(500).json({
+        error: 'Internal server error'
+      });
+    }
+  }
+
   getApp(): Application {
     return this.app;
   }
@@ -362,6 +449,10 @@ export class HTTPTransportManager {
     return new Promise((resolve, reject) => {
       const server = this.app.listen(port, host, () => {
         logger.info(`HTTP transport listening on ${host}:${port}`);
+        
+        // Start heartbeat monitoring
+        globalHeartbeat.start();
+        
         resolve();
       });
 
@@ -373,16 +464,14 @@ export class HTTPTransportManager {
   }
 
   async close(): Promise<void> {
-    // Close all active transports
-    for (const transport of Object.values(this.transports.streamable)) {
-      await transport.close();
-    }
+    // Stop heartbeat monitoring
+    globalHeartbeat.stop();
     
+    // Close all active SSE transports (streamable transports are handled per-request)
     for (const transport of Object.values(this.transports.sse)) {
       await transport.close();
     }
 
-    this.transports.streamable = {};
     this.transports.sse = {};
     
     logger.info('HTTP transport closed');

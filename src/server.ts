@@ -1,20 +1,31 @@
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { serverConfig } from './utils/config.js';
 import { logger } from './utils/logger.js';
 import { setupExampleResources } from './examples/resources.js';
 import { setupExampleTools } from './examples/tools.js';
 import { setupExamplePrompts } from './examples/prompts.js';
 import { setupSampling } from './examples/sampling.js';
+import { setupUtilityExamples } from './examples/utilities-simple.js';
 
 export class MCPServerTemplate {
   public readonly server: McpServer;
   private _isRunning = false;
 
   constructor() {
-    this.server = new McpServer({
-      name: serverConfig.name,
-      version: serverConfig.version
-    });
+    this.server = new McpServer(
+      {
+        name: serverConfig.name,
+        version: serverConfig.version
+      },
+      {
+        // Enable notification debouncing for efficient batch updates
+        debouncedNotificationMethods: [
+          'notifications/tools/list_changed',
+          'notifications/resources/list_changed',
+          'notifications/prompts/list_changed'
+        ]
+      }
+    );
 
     this.setupExamples();
   }
@@ -25,6 +36,7 @@ export class MCPServerTemplate {
     setupExampleTools(this.server);
     setupExamplePrompts(this.server);
     setupSampling(this.server);
+    setupUtilityExamples(this.server);
   }
 
   get isRunning(): boolean {

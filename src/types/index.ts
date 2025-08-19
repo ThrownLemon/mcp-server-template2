@@ -56,6 +56,7 @@ export interface CancellationToken {
   reason?: string | undefined;
   cancel(reason?: string): void;
   onCancelled(callback: (reason?: string) => void): void;
+  throwIfCancelled(): void;
 }
 
 export interface PaginationOptions {

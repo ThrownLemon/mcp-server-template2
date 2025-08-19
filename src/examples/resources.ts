@@ -3,7 +3,14 @@ import { ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { readFile, readdir, stat } from 'fs/promises';
 import { join, resolve } from 'path';
 import { logger } from '../utils/logger.js';
-import { paginate } from '../utils/pagination.js';
+import { 
+  paginate, 
+  paginateWithCursor, 
+  paginateAsync,
+  createResourcePaginationMeta,
+  validatePaginationOptions,
+  type CursorPaginationItem 
+} from '../utils/pagination.js';
 
 export function setupExampleResources(server: McpServer): void {
   logger.info('Setting up example resources');
@@ -13,6 +20,7 @@ export function setupExampleResources(server: McpServer): void {
   setupFileSystemResources(server);
   setupApiResources(server);
   setupBinaryResources(server);
+  setupPaginatedResources(server);
 }
 
 /**
@@ -521,4 +529,502 @@ function getMimeTypeFromExtension(filePath: string): string {
   };
 
   return mimeTypes[extension || ''] || 'text/plain';
+}
+
+/**
+ * Paginated Resources - Demonstrating different pagination patterns
+ */
+function setupPaginatedResources(server: McpServer): void {
+  // Generate sample dataset for pagination examples
+  const generateSampleData = (count: number): CursorPaginationItem[] => {
+    return Array.from({ length: count }, (_, i) => ({
+      id: `item-${String(i + 1).padStart(3, '0')}`,
+      title: `Sample Item ${i + 1}`,
+      description: `This is a sample item for demonstrating pagination. Item number ${i + 1} of ${count}.`,
+      category: ['technology', 'science', 'business', 'health', 'entertainment'][i % 5],
+      status: ['active', 'inactive', 'pending'][i % 3],
+      score: Math.floor(Math.random() * 100),
+      createdAt: new Date(Date.now() - (Math.random() * 365 * 24 * 60 * 60 * 1000)).toISOString(),
+      tags: [`tag-${(i % 10) + 1}`, `category-${(i % 5) + 1}`],
+      metadata: {
+        priority: ['low', 'medium', 'high'][i % 3],
+        department: ['engineering', 'marketing', 'sales', 'support'][i % 4]
+      }
+    }));
+  };
+
+  const sampleData = generateSampleData(150); // 150 items for pagination demos
+
+  // Offset-based pagination resource
+  server.registerResource(
+    'paginated-offset',
+    new ResourceTemplate('paginated://offset/{page?}/{size?}', { 
+      list: undefined 
+    }),
+    {
+      title: 'Offset-based Paginated Data',
+      description: 'Demonstrates traditional offset-based pagination with page numbers',
+      mimeType: 'application/json'
+    },
+    async (uri) => {
+      const url = new URL(uri.href);
+      const page = parseInt(url.pathname.split('/')[2] || '1', 10);
+      const size = parseInt(url.pathname.split('/')[3] || '10', 10);
+      
+      const paginationOptions = { page, size };
+      const validation = validatePaginationOptions(paginationOptions);
+      
+      if (!validation.isValid) {
+        return {
+          contents: [{
+            uri: uri.href,
+            text: JSON.stringify({
+              error: 'Invalid pagination parameters',
+              details: validation.errors
+            }, null, 2)
+          }]
+        };
+      }
+      
+      const result = paginate(sampleData, paginationOptions);
+      const meta = createResourcePaginationMeta(sampleData.length, page, size);
+      
+      return {
+        contents: [{
+          uri: uri.href,
+          text: JSON.stringify({
+            ...result,
+            metadata: {
+              ...meta,
+              paginationType: 'offset',
+              totalItems: sampleData.length,
+              requestedPage: page,
+              requestedSize: size,
+              examples: {
+                nextPage: page < meta.pages ? `paginated://offset/${page + 1}/${size}` : null,
+                prevPage: page > 1 ? `paginated://offset/${page - 1}/${size}` : null,
+                firstPage: `paginated://offset/1/${size}`,
+                lastPage: `paginated://offset/${meta.pages}/${size}`
+              }
+            }
+          }, null, 2)
+        }]
+      };
+    }
+  );
+
+  // Cursor-based pagination resource
+  server.registerResource(
+    'paginated-cursor',
+    new ResourceTemplate('paginated://cursor/{cursor?}?size={size?}&sortBy={sortBy?}&sortOrder={sortOrder?}', { 
+      list: undefined 
+    }),
+    {
+      title: 'Cursor-based Paginated Data',
+      description: 'Demonstrates cursor-based pagination for large datasets',
+      mimeType: 'application/json'
+    },
+    async (uri) => {
+      const url = new URL(uri.href);
+      const cursor = url.pathname.split('/')[2] === 'null' ? undefined : url.pathname.split('/')[2];
+      const size = parseInt(url.searchParams.get('size') || '10', 10);
+      const sortBy = url.searchParams.get('sortBy') || 'id';
+      const sortOrder = (url.searchParams.get('sortOrder') || 'asc') as 'asc' | 'desc';
+      
+      const paginationOptions = { cursor, size };
+      const validation = validatePaginationOptions(paginationOptions);
+      
+      if (!validation.isValid) {
+        return {
+          contents: [{
+            uri: uri.href,
+            text: JSON.stringify({
+              error: 'Invalid pagination parameters',
+              details: validation.errors
+            }, null, 2)
+          }]
+        };
+      }
+      
+      try {
+        const result = paginateWithCursor(sampleData, { cursor, size, sortBy, sortOrder });
+        
+        return {
+          contents: [{
+            uri: uri.href,
+            text: JSON.stringify({
+              ...result,
+              metadata: {
+                paginationType: 'cursor',
+                sortBy,
+                sortOrder,
+                requestedSize: size,
+                totalItems: sampleData.length,
+                examples: {
+                  nextPage: result.pagination.nextCursor 
+                    ? `paginated://cursor/${result.pagination.nextCursor}?size=${size}&sortBy=${sortBy}&sortOrder=${sortOrder}` 
+                    : null,
+                  prevPage: result.pagination.prevCursor
+                    ? `paginated://cursor/${result.pagination.prevCursor}?size=${size}&sortBy=${sortBy}&sortOrder=${sortOrder}`
+                    : null,
+                  firstPage: `paginated://cursor/null?size=${size}&sortBy=${sortBy}&sortOrder=${sortOrder}`,
+                  differentSort: `paginated://cursor/null?size=${size}&sortBy=createdAt&sortOrder=desc`
+                }
+              }
+            }, null, 2)
+          }]
+        };
+      } catch (error) {
+        logger.error('Cursor pagination failed', error as Error);
+        return {
+          contents: [{
+            uri: uri.href,
+            text: JSON.stringify({
+              error: 'Cursor pagination failed',
+              message: (error as Error).message
+            }, null, 2)
+          }]
+        };
+      }
+    }
+  );
+
+  // Filtered paginated resource
+  server.registerResource(
+    'paginated-filtered',
+    new ResourceTemplate('paginated://filtered/{category?}?page={page?}&size={size?}&status={status?}', { 
+      list: undefined 
+    }),
+    {
+      title: 'Filtered Paginated Data',
+      description: 'Demonstrates pagination with filtering and search capabilities',
+      mimeType: 'application/json'
+    },
+    async (uri) => {
+      const url = new URL(uri.href);
+      const category = url.pathname.split('/')[2] || '';
+      const page = parseInt(url.searchParams.get('page') || '1', 10);
+      const size = parseInt(url.searchParams.get('size') || '10', 10);
+      const status = url.searchParams.get('status');
+      
+      // Apply filters
+      let filteredData = sampleData;
+      
+      if (category && category !== 'all') {
+        filteredData = filteredData.filter(item => item.category === category);
+      }
+      
+      if (status) {
+        filteredData = filteredData.filter(item => item.status === status);
+      }
+      
+      const paginationOptions = { page, size };
+      const validation = validatePaginationOptions(paginationOptions);
+      
+      if (!validation.isValid) {
+        return {
+          contents: [{
+            uri: uri.href,
+            text: JSON.stringify({
+              error: 'Invalid pagination parameters',
+              details: validation.errors
+            }, null, 2)
+          }]
+        };
+      }
+      
+      const result = paginate(filteredData, paginationOptions);
+      const meta = createResourcePaginationMeta(filteredData.length, page, size);
+      
+      return {
+        contents: [{
+          uri: uri.href,
+          text: JSON.stringify({
+            ...result,
+            metadata: {
+              ...meta,
+              paginationType: 'filtered-offset',
+              filters: {
+                category: category || 'all',
+                status: status || 'all'
+              },
+              totalItems: sampleData.length,
+              filteredItems: filteredData.length,
+              availableCategories: ['technology', 'science', 'business', 'health', 'entertainment'],
+              availableStatuses: ['active', 'inactive', 'pending'],
+              examples: {
+                nextPage: page < meta.pages 
+                  ? `paginated://filtered/${category}?page=${page + 1}&size=${size}${status ? `&status=${status}` : ''}` 
+                  : null,
+                prevPage: page > 1 
+                  ? `paginated://filtered/${category}?page=${page - 1}&size=${size}${status ? `&status=${status}` : ''}` 
+                  : null,
+                differentFilter: 'paginated://filtered/technology?page=1&size=10&status=active',
+                allCategories: 'paginated://filtered/all?page=1&size=10'
+              }
+            }
+          }, null, 2)
+        }]
+      };
+    }
+  );
+
+  // Async pagination simulation resource
+  server.registerResource(
+    'paginated-async',
+    new ResourceTemplate('paginated://async/{cursor?}?size={size?}&delay={delay?}', { 
+      list: undefined 
+    }),
+    {
+      title: 'Async Paginated Data',
+      description: 'Demonstrates async cursor pagination with simulated database queries',
+      mimeType: 'application/json'
+    },
+    async (uri) => {
+      const url = new URL(uri.href);
+      const cursor = url.pathname.split('/')[2] === 'null' ? undefined : url.pathname.split('/')[2];
+      const size = parseInt(url.searchParams.get('size') || '5', 10);
+      const delay = parseInt(url.searchParams.get('delay') || '100', 10); // Simulated delay
+      
+      const paginationOptions = { cursor, size };
+      const validation = validatePaginationOptions(paginationOptions);
+      
+      if (!validation.isValid) {
+        return {
+          contents: [{
+            uri: uri.href,
+            text: JSON.stringify({
+              error: 'Invalid pagination parameters',
+              details: validation.errors
+            }, null, 2)
+          }]
+        };
+      }
+      
+      // Simulate async database fetch
+      const simulatedFetch = async (fetchCursor?: string, fetchSize?: number): Promise<CursorPaginationItem[]> => {
+        // Add artificial delay to simulate database query
+        await new Promise(resolve => setTimeout(resolve, delay));
+        
+        let startIndex = 0;
+        if (fetchCursor) {
+          try {
+            const cursorData = JSON.parse(Buffer.from(fetchCursor, 'base64').toString());
+            const cursorId = cursorData.value;
+            startIndex = sampleData.findIndex(item => item.id > cursorId);
+            if (startIndex === -1) startIndex = sampleData.length;
+          } catch {
+            startIndex = 0;
+          }
+        }
+        
+        return sampleData.slice(startIndex, startIndex + (fetchSize || 5));
+      };
+      
+      try {
+        const startTime = Date.now();
+        const result = await paginateAsync(simulatedFetch, paginationOptions);
+        const endTime = Date.now();
+        
+        return {
+          contents: [{
+            uri: uri.href,
+            text: JSON.stringify({
+              ...result,
+              metadata: {
+                paginationType: 'async-cursor',
+                queryTime: `${endTime - startTime}ms`,
+                simulatedDelay: `${delay}ms`,
+                requestedSize: size,
+                totalItems: sampleData.length,
+                examples: {
+                  nextPage: result.pagination.nextCursor
+                    ? `paginated://async/${result.pagination.nextCursor}?size=${size}&delay=${delay}`
+                    : null,
+                  firstPage: `paginated://async/null?size=${size}&delay=${delay}`,
+                  fasterQuery: `paginated://async/null?size=${size}&delay=50`,
+                  largerPage: `paginated://async/null?size=20&delay=${delay}`
+                }
+              }
+            }, null, 2)
+          }]
+        };
+      } catch (error) {
+        logger.error('Async pagination failed', error as Error);
+        return {
+          contents: [{
+            uri: uri.href,
+            text: JSON.stringify({
+              error: 'Async pagination failed',
+              message: (error as Error).message
+            }, null, 2)
+          }]
+        };
+      }
+    }
+  );
+
+  // Pagination documentation resource
+  server.registerResource(
+    'pagination-docs',
+    'docs://pagination',
+    {
+      title: 'Pagination Documentation',
+      description: 'Complete guide to using pagination features in this MCP server',
+      mimeType: 'text/markdown'
+    },
+    async (uri) => ({
+      contents: [{
+        uri: uri.href,
+        text: `# Pagination Documentation
+
+## Overview
+
+This MCP server provides comprehensive pagination support for handling large datasets efficiently. We support both traditional offset-based pagination and modern cursor-based pagination patterns.
+
+## Pagination Types
+
+### 1. Offset-based Pagination (Traditional)
+
+**Best for:** Known dataset sizes, simple navigation, user interfaces with page numbers
+
+**Resource:** \`paginated://offset/{page?}/{size?}\`
+
+**Parameters:**
+- \`page\`: Page number (1-based, default: 1)  
+- \`size\`: Items per page (default: 10, max: 1000)
+
+**Example:**
+\`\`\`
+paginated://offset/1/10     # First page, 10 items
+paginated://offset/3/25     # Third page, 25 items
+\`\`\`
+
+### 2. Cursor-based Pagination
+
+**Best for:** Large datasets, real-time data, better performance with frequent updates
+
+**Resource:** \`paginated://cursor/{cursor?}?size={size?}&sortBy={sortBy?}&sortOrder={sortOrder?}\`
+
+**Parameters:**
+- \`cursor\`: Base64 encoded position marker (optional for first page)
+- \`size\`: Items per page (default: 10, max: 1000)
+- \`sortBy\`: Sort field (default: 'id')
+- \`sortOrder\`: 'asc' or 'desc' (default: 'asc')
+
+**Example:**
+\`\`\`
+paginated://cursor/null?size=10&sortBy=createdAt&sortOrder=desc
+paginated://cursor/eyJ2YWx1ZSI6Iml0ZW0tMDEwIiwiZGlyZWN0aW9uIjoibmV4dCJ9?size=10
+\`\`\`
+
+### 3. Filtered Pagination
+
+**Best for:** Search results, category filtering, complex queries
+
+**Resource:** \`paginated://filtered/{category?}?page={page?}&size={size?}&status={status?}\`
+
+**Parameters:**
+- \`category\`: Filter by category
+- \`status\`: Filter by status
+- \`page\`: Page number
+- \`size\`: Items per page
+
+**Example:**
+\`\`\`
+paginated://filtered/technology?page=1&size=20&status=active
+\`\`\`
+
+### 4. Async Pagination
+
+**Best for:** Database queries, API calls, simulating real-world data fetching
+
+**Resource:** \`paginated://async/{cursor?}?size={size?}&delay={delay?}\`
+
+**Parameters:**
+- \`cursor\`: Cursor for next page
+- \`size\`: Items per page
+- \`delay\`: Simulated query delay in milliseconds
+
+## Response Format
+
+All paginated responses include:
+
+\`\`\`json
+{
+  "data": [...],           // Array of items for current page
+  "pagination": {
+    "size": 10,           // Requested page size
+    "hasNext": true,      // Whether there are more pages
+    "hasPrev": false,     // Whether there are previous pages
+    
+    // Offset pagination fields
+    "page": 1,            // Current page number
+    "total": 150,         // Total number of items
+    
+    // Cursor pagination fields  
+    "nextCursor": "...",  // Cursor for next page
+    "prevCursor": "..."   // Cursor for previous page
+  },
+  "metadata": {
+    "paginationType": "offset|cursor|filtered|async",
+    "totalItems": 150,
+    "examples": {...}     // Example URLs for navigation
+  }
+}
+\`\`\`
+
+## Best Practices
+
+### When to Use Each Type
+
+1. **Offset Pagination**: 
+   - Small to medium datasets (< 10,000 items)
+   - User needs page numbers
+   - Data doesn't change frequently
+
+2. **Cursor Pagination**:
+   - Large datasets (> 10,000 items)  
+   - Real-time data with frequent updates
+   - Better performance for deep pagination
+
+3. **Filtered Pagination**:
+   - Search functionality
+   - Complex filtering requirements
+   - Category-based browsing
+
+4. **Async Pagination**:
+   - Database-backed resources
+   - API-backed resources
+   - When you need to simulate query time
+
+### Performance Considerations
+
+- **Offset pagination**: Performance degrades with higher page numbers
+- **Cursor pagination**: Consistent performance regardless of position
+- **Filtering**: Consider indexing filtered fields
+- **Caching**: Cache results when possible for repeated queries
+
+### Error Handling
+
+- Invalid page numbers default to page 1
+- Invalid cursors start from the beginning
+- Size limits are enforced (max 1000)
+- Validation errors return detailed error messages
+
+## Implementation Notes
+
+The pagination utilities are implemented in \`src/utils/pagination.ts\` and provide:
+
+- \`paginate()\`: Basic offset pagination
+- \`paginateWithCursor()\`: Cursor-based pagination  
+- \`paginateAsync()\`: Async cursor pagination
+- \`validatePaginationOptions()\`: Input validation
+- \`createResourcePaginationMeta()\`: Metadata helpers
+
+These utilities handle edge cases, performance optimization, and provide consistent interfaces across all pagination types.
+`
+      }]
+    })
+  );
 }

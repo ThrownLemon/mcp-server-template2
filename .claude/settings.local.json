@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__archon__manage_project",
+      "mcp__archon__manage_task",
+      "mcp__archon__perform_rag_query",
+      "mcp__archon__search_code_examples",
+      "Bash(mkdir:*)",
+      "Bash(npm run build:*)",
+      "Bash(npm run start:http:*)",
+      "Bash(cp:*)",
+      "Bash(node:*)",
+      "Bash(curl:*)",
+      "Bash(pkill:*)",
+      "Bash(taskkill:*)",
+      "mcp__archon__health_check"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

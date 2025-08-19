@@ -1,0 +1,74 @@
+{
+  "name": "mcp-server-template",
+  "version": "1.0.0",
+  "description": "A comprehensive MCP server template with stdio, HTTP transports, OAuth 2.0, and all latest utilities",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "start:stdio": "node dist/stdio-server.js",
+    "start:http": "node dist/http-server.js",
+    "lint": "eslint src/**/*.ts",
+    "lint:fix": "eslint src/**/*.ts --fix",
+    "type-check": "tsc --noEmit",
+    "clean": "rimraf dist",
+    "prepare": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "ai",
+    "llm",
+    "server",
+    "template",
+    "oauth",
+    "http",
+    "stdio"
+  ],
+  "author": "MCP Community",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.3",
+    "express": "^5.1.0",
+    "cors": "^2.8.5",
+    "helmet": "^8.1.0",
+    "express-session": "^1.18.2",
+    "express-rate-limit": "^8.0.1",
+    "jsonwebtoken": "^9.0.2",
+    "jose": "^6.0.12",
+    "zod": "^4.0.17",
+    "winston": "^3.17.0",
+    "dotenv": "^17.2.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.3",
+    "@types/cors": "^2.8.19",
+    "@types/express-session": "^1.18.2",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/node": "^24.3.0",
+    "@typescript-eslint/eslint-plugin": "^8.40.0",
+    "@typescript-eslint/parser": "^8.40.0",
+    "eslint": "^9.33.0",
+    "rimraf": "^6.0.1",
+    "tsx": "^4.20.4",
+    "typescript": "^5.9.2"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-org/mcp-server-template.git"
+  },
+  "bugs": {
+    "url": "https://github.com/your-org/mcp-server-template/issues"
+  },
+  "homepage": "https://github.com/your-org/mcp-server-template#readme"
+}

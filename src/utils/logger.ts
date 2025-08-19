@@ -13,11 +13,22 @@ const logFormat = loggingConfig.format === 'json'
       winston.format.simple()
     );
 
+// Check if we're running in stdio mode (for MCP Inspector compatibility)
+const isStdioMode = process.argv[1]?.includes('stdio-server') || 
+                   process.env.MCP_STDIO_MODE === 'true';
+
 export const logger = winston.createLogger({
   level: loggingConfig.level,
   format: logFormat,
   defaultMeta: { service: 'mcp-server-template' },
-  transports: [
+  transports: isStdioMode ? [
+    // In stdio mode, use a null transport or file-based logging to avoid interfering with MCP protocol
+    new winston.transports.File({ 
+      filename: './mcp-server.log',
+      format: winston.format.json()
+    })
+  ] : [
+    // In HTTP mode, log to console as normal
     new winston.transports.Console({
       format: loggingConfig.format === 'json' 
         ? winston.format.json()

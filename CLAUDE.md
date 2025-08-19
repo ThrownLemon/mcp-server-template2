@@ -355,7 +355,7 @@ archon:manage_task(
 npm run build
 
 # Start MCP Inspector with your server
-npx @modelcontextprotocol/inspector node dist/stdio-server.js
+npx @modelcontextprotocol/inspector
 ```
 
 **2. Wait for Inspector to Start:**
